@@ -112,16 +112,41 @@ cout.flush();
         return false;
     }
 };
-
 #endif // BZ_ARRAY_SPACE_FILLING_TRAVERSAL
 #endif // BZ_HAVE_STD
+
+
+/** Helper class that implements the evaluation routines for different
+    ranks. */
+template<int N> struct _bz_evaluator {
+  template<typename T_dest, typename T_expr, typename T_update>
+  static void evaluateWithStackTraversal(T_dest&, T_expr, T_update);
+  template<typename T_dest, typename T_expr, typename T_update>
+  static void evaluateWithIndexTraversal(T_dest&, T_expr, T_update);
+};
+template<> struct _bz_evaluator<1> {
+  template<typename T_dest, typename T_expr, typename T_update>
+  static void evaluateWithStackTraversal(T_dest&, T_expr, T_update);
+  template<typename T_dest, typename T_expr, typename T_update>
+  static void evaluateWithUnitStride(T_dest& dest, 
+				     typename T_dest::T_iterator& iter,
+				     T_expr expr, T_update);
+  template<typename T_dest, typename T_expr, typename T_update>
+  static void evaluateWithCommonStride(T_dest& dest, 
+				       typename T_dest::T_iterator& iter,
+				       T_expr expr, int commonStride,
+				       T_update);
+  template<typename T_dest, typename T_expr, typename T_update>
+  static void evaluateWithIndexTraversal(T_dest&, T_expr, T_update);
+};
+
 
 template<typename T_dest, typename T_expr, typename T_update>
 inline void
 _bz_evaluate(T_dest& dest, T_expr expr, T_update)
 {
   typedef typename T_dest::T_numtype T_numtype;
-  const int N_rank = T_dest::rank();
+  const int N_rank = T_dest::rank_;
 
     // Check that all arrays have the same shape
 #ifdef BZ_DEBUG
@@ -176,9 +201,7 @@ _bz_evaluate(T_dest& dest, T_expr expr, T_update)
     // }
 
 #ifdef BZ_DEBUG_TRAVERSE
-    cout << "T_expr::numIndexPlaceholders = " << T_expr::numIndexPlaceholders
-         << endl; 
-    cout.flush();
+    BZ_DEBUG_MESSAGE( "T_expr::numIndexPlaceholders = " << T_expr::numIndexPlaceholders);
 #endif
 
     // Tau profiling code.  Provide Tau with a pretty-printed version of
@@ -204,11 +227,8 @@ _bz_evaluate(T_dest& dest, T_expr expr, T_update)
         // The expression involves index placeholders, so have to
         // use index traversal rather than stack traversal.
 
-        if (N_rank == 1)
-	  _bz_evaluateWithIndexTraversal1(dest, expr, T_update());
-        else
-	  _bz_evaluateWithIndexTraversalN(dest, expr, T_update());
-	return;
+      _bz_evaluator<T_dest::rank_>::evaluateWithIndexTraversal(dest, expr, T_update());
+      return;
     }
     else {
 
@@ -257,13 +277,11 @@ _bz_evaluate(T_dest& dest, T_expr expr, T_update)
 
         // If fast traversal isn't available or appropriate, then just
         // do a stack traversal.
-        if (N_rank == 1)
-	  _bz_evaluateWithStackTraversal1(dest, expr, T_update());
-	 else
-	   _bz_evaluateWithStackTraversalN(dest, expr, T_update());
-	 return;
-     }
- }
+#pragma forceinline recursive
+	_bz_evaluator<T_dest::rank_>::evaluateWithStackTraversal(dest, expr, T_update());
+	return;
+    }
+}
 
 /** This class performs the vectorized update through the update()
     method. It is a class because it is specialized to do nothing for
@@ -271,180 +289,334 @@ _bz_evaluate(T_dest& dest, T_expr expr, T_update)
     infinite template recursions on multicomponent containers. */
 template<typename T_numtype, typename T_expr, typename T_update, int N>
 struct chunked_updater {
-  typedef typename T_update::template updateCast<typename simdTypes<T_numtype>::vecType, typename T_expr::T_tvresult>::T_updater T_tvupdater;
 
-  static inline void update(T_numtype* data, T_expr expr, int i) {  
-    T_tvupdater::update(*reinterpret_cast<typename simdTypes<T_numtype>::vecType*>(data+i), expr.fastRead_tv(i));
+  static __forceinline void aligned_update(T_numtype* data, T_expr expr, int i) {
+
+    TinyVector<T_numtype,N>::_tv_evaluate_aligned
+      (data+i, expr.fastRead_tv<N>(i), T_update());
   };
+
+  static __forceinline void unaligned_update(T_numtype* data, T_expr expr, int i) {
+    TinyVector<T_numtype,N>::_tv_evaluate_unaligned
+      (data+i, expr.fastRead_tv<N>(i), T_update());
+  };
+
 };
 
-/** specialization ensures we don't try to instantiate updates for
+/** specialization ensures we don't try to instantiate chunked_updates for
     types with a vecWidth of 1. */
 template<typename T_numtype, typename T_expr, typename T_update>
 struct chunked_updater<T_numtype, T_expr, T_update, 1> {
-  static inline void update(T_numtype* data, T_expr expr, int i)
-  {
-    BZPRECONDITION(0);
-  };
+  static __forceinline void aligned_update(T_numtype* data, T_expr expr, int i) {
+    BZPRECONDITION(0); };
+  static __forceinline void unaligned_update(T_numtype* data, T_expr expr, int i) {
+    BZPRECONDITION(0); };
 };
 
+/** A metaprogram that uses the chunked_updater to assign an
+    unknown-length expression to a pointer by unrolling in a binary
+    fashion. I+1 is the number of significant bits in the longest
+    length to consider. In this way, assigning a vector of length 7 is
+    I=2 and will take 3 operations. The metaprogram counts down, that
+    way it will start with large updates which will be aligned for
+    aligned expressions. */
+template<int I> 
+class _bz_meta_binaryAssign {
+public:
+    template<typename T_data, typename T_expr, typename T_update>
+    static inline void assign(T_data* data, T_expr expr,
+			      int ubound, int pos, T_update) {
+      if(ubound&(1<<I)) {
+	chunked_updater<T_data, T_expr, T_update, 1<<I >::
+	  unaligned_update(data, expr, pos); 
+	pos += (1<<I);
+      }
+      _bz_meta_binaryAssign<I-1>::assign(data, expr, ubound, pos, T_update());
+      }
+        
+};
+
+/** Partial specialization for bit 0 uses the scalar update. */
+template<> 
+class _bz_meta_binaryAssign<0> {
+public:
+    template<typename T_data, typename T_expr, typename T_update>
+    static inline void assign(T_data* data, T_expr expr,
+			      int ubound, int pos, T_update) {
+      if(ubound&1) {
+	T_update::update(data[pos], expr.fastRead(pos));
+	++pos;
+      }
+      // this ends the metaprogram.
+    }
+};
+
+/** Unit-stride evaluator. This can use vectorized update, so if both
+    dest and expr are unit stride, we redirect here. This function then deals with unaligned   There is no
+    explicit unrolling option here, since it's already vectorized
+    using the chunk_updater. \todo Would it be useful to retain the
+    unrolled loop for scalar architectures?  */
 template<typename T_dest, typename T_expr, typename T_update>
 inline void
-_bz_evaluateWithStackTraversal1(T_dest& dest, T_expr expr, T_update)
+_bz_evaluator<1>::
+evaluateWithUnitStride(T_dest& dest, typename T_dest::T_iterator& iter,
+		       T_expr expr, T_update)
 {
-   typedef typename T_dest::T_numtype T_numtype;
+  typedef typename T_dest::T_numtype T_numtype;
+  const diffType ubound = dest.length(firstRank);
+  T_numtype* restrict data = const_cast<T_numtype*>(iter.data());
+  int i=0;
 
- #ifdef BZ_DEBUG_TRAVERSE
-     BZ_DEBUG_MESSAGE("Array<" << BZ_DEBUG_TEMPLATE_AS_STRING_LITERAL(T_numtype)
-	  << ", " << N_rank << ">: Using stack traversal");
- #endif
-     typename T_dest::T_iterator iter(dest);
-     iter.loadStride(firstRank);
-     expr.loadStride(firstRank);
+#ifdef BZ_DEBUG_TRAVERSE
+  BZ_DEBUG_MESSAGE("\tunit stride expression with length: "<< ubound << ".");
+#endif
 
-     const bool useUnitStride = iter.isUnitStride(firstRank)
-       && expr.isUnitStride(firstRank);
+  const int max_bits_for_unroll=4;
+  if(ubound < 1<<max_bits_for_unroll) {
+    // for short expressions, it's more important to lose
+    // overhead. Single-element ones have already been dealt with, but
+    // for lengths that are have fewer significant bits than
+    // max_bits_for_unroll we do a binary-style unroll here. (We don't
+    // worry about simd widths either, because we essentially just
+    // present the compiler with a vectorizable view. It will do
+    // sensible things even if the expressions are not vectorizable.)
+#ifdef BZ_DEBUG_TRAVERSE
+    BZ_DEBUG_MESSAGE("\tshort expression, using binary meta-unroll assignment.");
+#endif
 
- #ifdef BZ_ARRAY_EXPR_USE_COMMON_STRIDE
-     diffType commonStride = expr.suggestStride(firstRank);
-     if (iter.suggestStride(firstRank) > commonStride)
-	 commonStride = iter.suggestStride(firstRank);
-     bool useCommonStride = iter.isStride(firstRank,commonStride)
-	 && expr.isStride(firstRank,commonStride);
+    _bz_meta_binaryAssign<max_bits_for_unroll-1>::
+      assign(data, expr, ubound, 0, T_update());
+    return;
+  }
 
-  #ifdef BZ_DEBUG_TRAVERSE
-     BZ_DEBUG_MESSAGE("BZ_ARRAY_EXPR_USE_COMMON_STRIDE:" << endl
-	 << "    commonStride = " << commonStride << " useCommonStride = "
-	 << useCommonStride);
-  #endif
- #else
-     const diffType commonStride = 1;
-     const bool useCommonStride = false;
- #endif
+  // calculate uneven elements at the beginning of dest
+  const int uneven_start=simdTypes<T_numtype>::offsetToAlignment(data);
+  const int dest_width = simdTypes<T_numtype>::vecWidth;
 
-     const T_numtype * last = iter.data() + dest.length(firstRank) 
-	 * dest.stride(firstRank);
+  // we can only guarantee alignment if all operands have the same
+  // width and are not mutually misaligned
+  const bool can_align = 
+    (T_expr::minWidth == T_expr::maxWidth) &&
+    (T_expr::minWidth == dest_width) &&
+    expr.isVectorAligned(uneven_start);
 
-     if (useUnitStride || useCommonStride)
-     {
- #ifdef BZ_USE_FAST_READ_ARRAY_EXPR
+  // if we have mixed widths, we make the loop the widest and let the
+  // compiler sort out how to vectorize. (We can not take the
+  // expression length into account here as that would make this a
+  // runtime computation.)
+  const int loop_width = BZ_MAX(BZ_MAX(T_expr::minWidth, T_expr::maxWidth),
+		  simdTypes<T_numtype>::vecWidth);
 
- #ifdef BZ_DEBUG_TRAVERSE
-     BZ_DEBUG_MESSAGE("BZ_USE_FAST_READ_ARRAY_EXPR with commonStride");
- #endif
-     const diffType ubound = dest.length(firstRank) * commonStride;
-	 T_numtype* restrict data = const_cast<T_numtype*>(iter.data());
+#ifdef BZ_DEBUG_TRAVERSE
+  if(T_expr::minWidth!=T_expr::maxWidth) {
+    BZ_DEBUG_MESSAGE("\texpression has mixed width: " << T_expr::minWidth << "-" <<T_expr::maxWidth);
+  } else {
+    BZ_DEBUG_MESSAGE("\texpression SIMD width: " << T_expr::minWidth);
+  }
+  BZ_DEBUG_MESSAGE("\tdestination SIMD width: " << dest_width);
+  if(loop_width>1) {
+  if(!expr.isVectorAligned(uneven_start)) {
+    BZ_DEBUG_MESSAGE("\toperands have different alignments");
+  }
+  if(!can_align) {
+    BZ_DEBUG_MESSAGE("\tcannot guarantee alignment - using unaligned vectorization")
+      } else {
+    BZ_DEBUG_MESSAGE("\texpression can be aligned");
+  }
+  if(loop_width<=ubound) {
+    BZ_DEBUG_MESSAGE("\tusing vectorization width " << loop_width);
+  } else {
+    BZ_DEBUG_MESSAGE("\texpression not long enough to be vectorized");
+  }
+  } else {
+    BZ_DEBUG_MESSAGE("\texpression cannot be vectorized");
+  }
+#endif
 
-	 if (commonStride == 1)
-	 {
-  #ifndef BZ_ARRAY_STACK_TRAVERSAL_UNROLL
-	   const int dest_width = simdTypes<T_numtype>::vecWidth;
-	   // if expressions are vector aligned we use the tv loop
-	   if( (dest_width >1) && (ubound>dest_width) && 
-	       (simdTypes<typename T_dest::T_numtype>::vecWidth ==
-		simdTypes<typename T_expr::T_numtype>::vecWidth) &&
-	       dest.isVectorAligned() && expr.isVectorAligned() ) {
-	     asm("nop;nop;nop;");
-	     for (int i=0; i < ubound; i+=dest_width)
-#pragma vector aligned
-	       chunked_updater<T_numtype, T_expr, T_update, simdTypes<T_numtype>::vecWidth>::update(data, expr, i);
-	     asm("nop;nop;nop;");
-	   }
-	   else
-	     // if not aligned, not wide enough loop, or not more than
-	     // one item fitting in simd width, we revert to
-	     // single-element loop
+  // For short unaligned expressions, the overhead in doing the
+  // heading and trailing scalar elements outweigh the gain of having
+  // full alignment, so we only do so if the expression is long
+  // enough. The critical length goes down as the simd width goes up.
+  const int min_number_of_vector_per_scalar = 16/loop_width;
+
+  if(loop_width>1)
+
+    // If the expression is aligned, we do so.  However, if we need to
+    // deal with uneven start/end elements, we only use the aligned
+    // loop if the number of vector operations is large 
+    if(can_align && 
+       ((uneven_start>0?1:0)*min_number_of_vector_per_scalar < ubound)) {
+#ifdef BZ_DEBUG_TRAVERSE
+      if(i<uneven_start) {
+	BZ_DEBUG_MESSAGE("\tscalar loop for " << uneven_start << " unaligned starting elements");
+      }
+#endif
 #pragma ivdep
-	     for (int i=0; i < ubound; ++i)
-	       T_update::update(data[i], expr.fastRead(i));
-  #else
-	     diffType n1 = ubound & 3;
-	     diffType i = 0;
-	     for (; i < n1; ++i)
-		 T_update::update(*data++, expr.fastRead(i));
+      for (; i < uneven_start; ++i)
+#pragma forceinline recursive
+	T_update::update(data[i], expr.fastRead(i));
+      
+      // and then the vecotrized part
+#ifdef BZ_DEBUG_TRAVERSE
+      if(i<=ubound-loop_width) {
+	BZ_DEBUG_MESSAGE("\taligned vectorized loop with width " << loop_width << " starting at " << i);
+      }
+#endif
+      for (; i <= ubound-loop_width; i+=loop_width)
+#pragma forceinline recursive
+	chunked_updater<T_numtype, T_expr, T_update, loop_width>::
+	  aligned_update(data, expr, i);
+    }
+    else {
+      // if we can not line up the expressions, we just start using
+      // unaligned vectorized instructions from element 0
+#ifdef BZ_DEBUG_TRAVERSE
+      if(i<=ubound-loop_width) {
+	BZ_DEBUG_MESSAGE("\tunaligned vectorized loop with width " << loop_width << " starting at " << i);
+      }
+#endif
+      for (; i <= ubound-loop_width; i+=loop_width)
+#pragma forceinline recursive
+	chunked_updater<T_numtype, T_expr, T_update, loop_width>::
+	  unaligned_update(data, expr, i);
+    }
 
-	     for (; i < ubound; i += 4)
-	     {
- #ifndef BZ_ARRAY_STACK_TRAVERSAL_CSE_AND_ANTIALIAS
-		 T_update::update(*data++, expr.fastRead(i));
-		 T_update::update(*data++, expr.fastRead(i+1));
-		 T_update::update(*data++, expr.fastRead(i+2));
-		 T_update::update(*data++, expr.fastRead(i+3));
- #else
-		 const diffType t1 = i+1;
-		 const diffType t2 = i+2;
-		 const diffType t3 = i+3;
+  // now complete the loop with the elements not done in
+  // the chunked loop. (if not aligned, not wide enough
+  // loop, or not more than one item fitting in simd width,
+  // this is all of them.)
+#ifdef BZ_DEBUG_TRAVERSE
+  if(i<ubound) {
+    BZ_DEBUG_MESSAGE("\tscalar loop for " << ubound-i << " trailing elements starting at " << i);
+  }
+#endif
+#pragma ivdep
+  for (; i < ubound; ++i)
+#pragma forceinline recursive
+    T_update::update(data[i], expr.fastRead(i));
 
-		 _bz_typename T_expr::T_numtype tmp1, tmp2, tmp3, tmp4;
+#ifdef BZ_DEBUG_TRAVERSE
+  BZ_DEBUG_MESSAGE("\tunit stride evaluation done")
+#endif
+}
 
-		 tmp1 = expr.fastRead(i);
-		 tmp2 = expr.fastRead(BZ_NO_PROPAGATE(t1));
-		 tmp3 = expr.fastRead(BZ_NO_PROPAGATE(t2));
-		 tmp4 = expr.fastRead(BZ_NO_PROPAGATE(t3));
 
-		 T_update::update(*data++, tmp1);
-		 T_update::update(*data++, tmp2);
-		 T_update::update(*data++, tmp3);
-		 T_update::update(*data++, tmp4);
- #endif
-	     }
-  #endif // BZ_ARRAY_STACK_TRAVERSAL_UNROLL
+/** Common-stride evaluator. Used for common but non-unit strides. */
+template<typename T_dest, typename T_expr, typename T_update>
+inline void
+_bz_evaluator<1>::
+evaluateWithCommonStride(T_dest& dest, typename T_dest::T_iterator& iter,
+			 T_expr expr, int commonStride, T_update)
+{
+#ifdef BZ_DEBUG_TRAVERSE 
+     BZ_DEBUG_MESSAGE("\tcommon stride = " << commonStride);
+#endif
 
-	 }
-  #ifdef BZ_ARRAY_EXPR_USE_COMMON_STRIDE
-	 else {
+  typedef typename T_dest::T_numtype T_numtype;
+  const diffType ubound = dest.length(firstRank) * commonStride;
+  T_numtype* restrict data = const_cast<T_numtype*>(iter.data());
 
-   #ifndef BZ_ARRAY_STACK_TRAVERSAL_UNROLL
-	     for (diffType i=0; i != ubound; i += commonStride)
-		 T_update::update(data[i], expr.fastRead(i));
-   #else
-	     diffType n1 = (dest.length(firstRank) & 3) * commonStride;
+#ifndef BZ_ARRAY_STACK_TRAVERSAL_UNROLL
+#pragma ivdep
+  for (diffType i=0; i != ubound; i += commonStride)
+    T_update::update(data[i], expr.fastRead(i));
+#else
+  diffType n1 = (dest.length(firstRank) & 3) * commonStride;
+	 
+  diffType i = 0;
+  for (; i != n1; i += commonStride)
+    T_update::update(data[i], expr.fastRead(i));
+	 
+  diffType strideInc = 4 * commonStride;
+  for (; i != ubound; i += strideInc)
+    {
+      T_update::update(data[i], expr.fastRead(i));
+      diffType i2 = i + commonStride;
+      T_update::update(data[i2], expr.fastRead(i2));
+      diffType i3 = i + 2 * commonStride;
+      T_update::update(data[i3], expr.fastRead(i3));
+      diffType i4 = i + 3 * commonStride;
+      T_update::update(data[i4], expr.fastRead(i4));
+    }
+#endif  // BZ_ARRAY_STACK_TRAVERSAL_UNROLL
+  return;
+}
 
-	     diffType i = 0;
-	     for (; i != n1; i += commonStride)
-		 T_update::update(data[i], expr.fastRead(i));
 
-	     diffType strideInc = 4 * commonStride;
-	     for (; i != ubound; i += strideInc)
-	     {
-		 T_update::update(data[i], expr.fastRead(i));
-		 diffType i2 = i + commonStride;
-		 T_update::update(data[i2], expr.fastRead(i2));
-		 diffType i3 = i + 2 * commonStride;
-		 T_update::update(data[i3], expr.fastRead(i3));
-		 diffType i4 = i + 3 * commonStride;
-		 T_update::update(data[i4], expr.fastRead(i4));
-	     }
-   #endif  // BZ_ARRAY_STACK_TRAVERSAL_UNROLL
-	 }
-  #endif  // BZ_ARRAY_EXPR_USE_COMMON_STRIDE
+/* 1-d stack traversal evaluation. Forwards to evaluateWithUnitStride
+   or evaluateWithCommonStride, if applicable, otherwise does the slow
+   different-stride update. */
+template<typename T_dest, typename T_expr, typename T_update>
+inline void
+_bz_evaluator<1>::
+evaluateWithStackTraversal(T_dest& dest, T_expr expr, T_update)
+{
+#ifdef BZ_DEBUG_TRAVERSE
+  BZ_DEBUG_MESSAGE("_bz_evaluator<1>: Using stack traversal");
+#endif
 
- #else   // ! BZ_USE_FAST_READ_ARRAY_EXPR
+  typename T_dest::T_iterator iter(dest);
 
- #ifdef BZ_DEBUG_TRAVERSE
-     BZ_DEBUG_MESSAGE("Common stride, no fast read");
- #endif
-	 while (iter.data() != last)
-	 {
-	     T_update::update(*const_cast<T_numtype*>(iter.data()), *expr);
-	     iter.advance(commonStride);
-	     expr.advance(commonStride);
-	 }
- #endif
-     }
-     else {
-	 while (iter.data() != last)
-	 {
-	     T_update::update(*const_cast<T_numtype*>(iter.data()), *expr);
-	     iter.advance();
-	     expr.advance();
-	 }
-     }
- }
+  // if we only have one element, strides don't matter. In that case,
+  // we just evaluate that right now so we don't have to deal with it.
+  if(dest.length(firstRank)==1) {
+#ifdef BZ_DEBUG_TRAVERSE
+  BZ_DEBUG_MESSAGE("\tshortcutting evaluation of single-element expression");
+#endif
+    T_update::update(*const_cast<typename T_dest::T_numtype*>(iter.data()), *expr);
+    return;
+  }
 
- template<typename T_dest, typename T_expr, typename T_update>
- inline void
- _bz_evaluateWithStackTraversalN(T_dest& dest, T_expr expr, T_update)
+  iter.loadStride(firstRank);
+  expr.loadStride(firstRank);
+
+  const bool useUnitStride = iter.isUnitStride()
+    && expr.isUnitStride();
+
+  if(useUnitStride) {
+    evaluateWithUnitStride(dest, iter, expr, T_update());
+    return;
+  }
+
+#ifdef BZ_ARRAY_EXPR_USE_COMMON_STRIDE
+  diffType commonStride = expr.suggestStride(firstRank);
+  if (iter.suggestStride(firstRank) > commonStride)
+    commonStride = iter.suggestStride(firstRank);
+  bool useCommonStride = iter.isStride(firstRank,commonStride)
+    && expr.isStride(firstRank,commonStride);
+#else
+  diffType commonStride = 1;
+  bool useCommonStride = false;
+#endif
+
+  if (useCommonStride) {
+    evaluateWithCommonStride(dest, iter, expr, commonStride, T_update());
+    return;
+  }
+
+#ifdef BZ_DEBUG_TRAVERSE
+  BZ_DEBUG_MESSAGE("\tnot common stride");
+#endif
+
+  // not common stride
+  typedef typename T_dest::T_numtype T_numtype;
+  const T_numtype * last = iter.data() + dest.length(firstRank) 
+    * dest.stride(firstRank);
+     
+  while (iter.data() != last)
+    {
+      T_update::update(*const_cast<T_numtype*>(iter.data()), *expr);
+      iter.advance();
+      expr.advance();
+    }
+}
+
+
+template<int N>
+template<typename T_dest, typename T_expr, typename T_update>
+inline void
+_bz_evaluator<N>::
+evaluateWithStackTraversal(T_dest& dest, T_expr expr, T_update)
  {
    typedef typename T_dest::T_numtype T_numtype;
    const int N_rank = T_dest::rank();
@@ -510,8 +682,8 @@ _bz_evaluateWithStackTraversal1(T_dest& dest, T_expr expr, T_update)
       * we might take advantage of this and generate more
       * efficient code.
       */
-     const bool useUnitStride = iter.isUnitStride(maxRank)
-                          && expr.isUnitStride(maxRank);
+     const bool useUnitStride = iter.isUnitStride()
+                          && expr.isUnitStride();
 
     /*
      * Do all array operands share a common stride in the innermost
@@ -732,9 +904,11 @@ _bz_evaluateWithStackTraversal1(T_dest& dest, T_expr expr, T_update)
     }
 }
 
+
 template<typename T_dest, typename T_expr, typename T_update>
 inline void
-_bz_evaluateWithIndexTraversal1(T_dest& dest, T_expr expr, T_update)
+_bz_evaluator<1>::
+evaluateWithIndexTraversal(T_dest& dest, T_expr expr, T_update)
 {
   typedef typename T_dest::T_numtype T_numtype;
   const int N_rank = T_dest::rank();
@@ -767,9 +941,11 @@ _bz_evaluateWithIndexTraversal1(T_dest& dest, T_expr expr, T_update)
     }
 }
 
+  template<int N>
 template<typename T_dest, typename T_expr, typename T_update>
 inline void
-_bz_evaluateWithIndexTraversalN(T_dest& dest, T_expr expr, T_update)
+_bz_evaluator<N>::
+evaluateWithIndexTraversal(T_dest& dest, T_expr expr, T_update)
 {
   typedef typename T_dest::T_numtype T_numtype;
   const int N_rank = T_dest::rank();

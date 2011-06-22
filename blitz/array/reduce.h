@@ -101,7 +101,15 @@ public:
         numTVOperands = T_expr::numTVOperands,
         numTMOperands = T_expr::numTMOperands,
         numIndexPlaceholders = T_expr::numIndexPlaceholders + 1,
+      minWidth = simdTypes<T_numtype>::vecWidth,
+      maxWidth = simdTypes<T_numtype>::vecWidth,
         rank_ = T_expr::rank_ - 1;
+
+  /** Vectorization doesn't work for index expressions, so we can use
+      a dummy here. */
+  template<int N> struct tvresult {
+    typedef FastTV2Iterator<T_numtype, N> Type;
+  };
 
     _bz_ArrayExprReduce(const _bz_ArrayExprReduce& reduce)
         : reduce_(reduce.reduce_), iter_(reduce.iter_), ordering_(reduce.ordering_) { }
@@ -187,6 +195,8 @@ public:
 
     bool isUnitStride(int)    const { 
       BZPRECHECK(0,"Can't use stack iteration on a reduction."); return false; }
+    bool isUnitStride()       const { 
+      BZPRECHECK(0,"Can't use stack iteration on a reduction."); return false; }
     bool canCollapse(int,int) const { 
       BZPRECHECK(0,"Can't use stack iteration on a reduction."); return false; }
     bool isStride(int,int)    const { 
@@ -197,15 +207,16 @@ public:
     T_numtype fastRead(int)   const { 
       BZPRECHECK(0,"Can't use stack iteration on a reduction."); return T_numtype(); }
 
-    T_numtype fastRead_tv(int)   const { 
-      BZPRECHECK(0,"Can't use stack iteration on a reduction."); 
-      return T_numtype();//tvresult(iter_, reduce_); 
+  template<int N>
+  typename tvresult<N>::Type fastRead_tv(int) const {
+    BZPRECHECK(0,"Can't use stack iteration on an index mapping.");
+    return TinyVector<T_numtype, N>();
     }
 
     /** Determining whether the resulting expression is aligned is
 	difficult, so to be safe we say no. It shouldn't be attempted
 	anyway, though. */
-    bool isVectorAligned() const {
+    bool isVectorAligned(diffType offset) const {
       return false; }
 
     // don't know how to define these, so stencil expressions won't work
@@ -335,7 +346,7 @@ template<typename T_expr, typename T_reduction>
 _bz_typename T_reduction::T_resulttype
 _bz_reduceWithIndexVectorTraversal(T_expr expr, T_reduction reduction);
 
-#define BZ_DECL_ARRAY_FULL_REDUCE(fn,reduction)                         \
+#define BZ_DECL_ARRAY_FULL_REDUCE(fn,reduction)				\
 template<typename T_expr>                                               \
  _bz_inline_et								\
 _bz_typename reduction<_bz_typename T_expr::T_numtype>::T_resulttype    \

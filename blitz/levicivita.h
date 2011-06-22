@@ -34,6 +34,8 @@ public:
         numTVOperands = 0, 
         numTMOperands = 0, 
         numIndexPlaceholders = 3, 
+      minWidth = simdTypes<T_numtype>::vecWidth,
+      maxWidth = simdTypes<T_numtype>::vecWidth,
         rank_ = 3;
 
   // copy constructor and default constructors are implicit

@@ -118,6 +118,27 @@ def declandfill(loop, declstub,datamember):
              (declstub%n, n, datamember) for n in looparrays(loop)])
     return decl
 
+def unaligneddeclandfill(loop):
+    decl=cc(["""
+    Array<%s,1> %s(N+1);
+    Array<%s,1> %s(%s(Range(1,N)));
+    initializeRandomDouble(%s.dataFirst(), N);\n"""%
+             (loopnumtype(loop)[0], n+"fill", loopnumtype(loop)[0],
+              n, n+"fill",n) \
+             for n in looparrays(loop)])
+    return decl
+
+def misaligneddeclandfill(loop):
+    decl=cc(["""
+    Array<%s,1> %s(N+%d);
+    Array<%s,1> %s(%s(Range(%d,N+%d-1)));
+    initializeRandomDouble(%s.dataFirst(), N);\n"""%
+             (loopnumtype(loop)[0], n+"fill", len(looparrays(loop)),
+              loopnumtype(loop)[0], n, n+"fill",i,i,
+              n) \
+             for i,n in enumerate(looparrays(loop))])
+    return decl
+
 def gencpp(loop):
     """Generate the C++ loop code from loop data by substituting the
     skeleton."""
@@ -126,6 +147,7 @@ def gencpp(loop):
     subs=[
         ("loopname",loopname(loop)),
         ("LOOPNAME",loopname(loop).upper()),
+        ("loopflops",`loopflops(loop)`),
         ("gentime",time.asctime(time.gmtime())),
         ("fortrandecls", fortrandecls(loop)),
         ("scalarargdecl", cc([", %s %s"%(loopnumtype(loop)[0], n)
@@ -139,6 +161,8 @@ def gencpp(loop):
         ("arraydeclandfill",
          declandfill(loop, "Array<%s,1> %s(N)"%(numtype,"%s"),
                      ".dataFirst()")),
+        ("unalignedarraydeclandfill", unaligneddeclandfill(loop)),
+        ("misalignedarraydeclandfill", misaligneddeclandfill(loop)),
         ("vectordeclandfill",
          declandfill(loop, "Vector<%s> %s(N)"%(numtype,"%s"),
                      ".data()")),
@@ -207,7 +231,7 @@ cpp_skeleton = """
 
 #include <blitz/vector2.h>
 #include <blitz/array.h>
-#include <blitz/rand-uniform.h>
+#include <random/uniform.h>
 #include <blitz/benchext.h>
 
 #ifdef BZ_HAVE_VALARRAY
@@ -248,6 +272,8 @@ extern "C" {
 
 void VectorVersion(BenchmarkExt<int>& bench#scalarargdecl#);
 void ArrayVersion(BenchmarkExt<int>& bench#scalarargdecl#);
+void ArrayVersion_unaligned(BenchmarkExt<int>& bench#scalarargdecl#);
+void ArrayVersion_misaligned(BenchmarkExt<int>& bench#scalarargdecl#);
 void doTinyVectorVersion(BenchmarkExt<int>& bench#scalarargdecl#);
 void F77Version(BenchmarkExt<int>& bench#scalarargdecl#);
 #ifdef FORTRAN_90
@@ -264,7 +290,7 @@ const bool runvector=true;
 
 int main()
 {
-    int numBenchmarks = runvector ? 6 : 5;
+    int numBenchmarks = runvector ? 8 : 7;
 #ifndef BENCHMARK_VALARRAY
     numBenchmarks--;   // No  valarray
 #endif
@@ -287,7 +313,7 @@ int main()
 	
         if (iters(i) < 2)
             iters(i) = 2;
-        flops(i) = 2 * parameters(i);
+        flops(i) = #loopflops# * parameters(i);
     }
 
     bench.setParameterVector(parameters);
@@ -298,8 +324,10 @@ int main()
 
 #declarescalars#
 
-    ArrayVersion(bench #scalarargs#);
-    doTinyVectorVersion(bench #scalarargs#);
+    ArrayVersion(bench#scalarargs#);
+    ArrayVersion_unaligned(bench#scalarargs#);
+    ArrayVersion_misaligned(bench#scalarargs#);
+    doTinyVectorVersion(bench#scalarargs#);
     F77Version(bench #scalarargs#);
 #ifdef FORTRAN_90
     F90Version(bench #scalarargs#);
@@ -318,21 +346,21 @@ int main()
 }
 
 template<class T>
-void initializeRandomDouble(T data, int numElements, int stride = 1)
+void initializeRandomDouble(T* data, int numElements, int stride = 1)
 {
-    static Random<Uniform> rnd;
+    ranlib::Uniform<T> rnd;
 
     for (int i=0; i < numElements; ++i)
         data[size_t(i*stride)] = rnd.random();
 }
 
 template<class T>
-void initializeArray(T& array, int numElements)
+void initializeRandomDouble(valarray<T>& data, int numElements, int stride = 1)
 {
-    static Random<Uniform> rnd;
+    ranlib::Uniform<T> rnd;
 
-    for (size_t i=0; i < numElements; ++i)
-        array[i] = rnd.random();
+    for (int i=0; i < numElements; ++i)
+        data[size_t(i*stride)] = rnd.random();
 }
 
 void VectorVersion(BenchmarkExt<int>& bench#scalarargdecl#)
@@ -380,6 +408,70 @@ void VectorVersion(BenchmarkExt<int>& bench#scalarargdecl#)
         cout << "Array<T,1>: N = " << N << endl;
 
 #arraydeclandfill#
+
+        bench.start();
+        for (long i=0; i < iters; ++i)
+        {
+            #looparrayexpr#;
+            sink();
+        }
+        bench.stop();
+
+        bench.startOverhead();
+        for (long i=0; i < iters; ++i) {
+            sink();
+	}
+
+        bench.stopOverhead();
+    }
+
+    bench.endImplementation();
+}
+
+  void ArrayVersion_unaligned(BenchmarkExt<int>& bench#scalarargdecl#)
+{
+    bench.beginImplementation("Array<T,1> (unal.)");
+
+    while (!bench.doneImplementationBenchmark())
+    {
+        int N = bench.getParameter();
+        long iters = bench.getIterations();
+
+        cout << "unaligned Array<T,1>: N = " << N << endl;
+
+#unalignedarraydeclandfill#
+
+        bench.start();
+        for (long i=0; i < iters; ++i)
+        {
+            #looparrayexpr#;
+            sink();
+        }
+        bench.stop();
+
+        bench.startOverhead();
+        for (long i=0; i < iters; ++i) {
+            sink();
+	}
+
+        bench.stopOverhead();
+    }
+
+    bench.endImplementation();
+}
+
+  void ArrayVersion_misaligned(BenchmarkExt<int>& bench#scalarargdecl#)
+{
+    bench.beginImplementation("Array<T,1> (misal.)");
+
+    while (!bench.doneImplementationBenchmark())
+    {
+        int N = bench.getParameter();
+        long iters = bench.getIterations();
+
+        cout << "misaligned Array<T,1>: N = " << N << endl;
+
+#misalignedarraydeclandfill#
 
         bench.start();
         for (long i=0; i < iters; ++i)

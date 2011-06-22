@@ -49,12 +49,7 @@
 #include <blitz/tinyvec2.h>
 #include <blitz/tvecglobs.h>
 
-#ifdef BZ_ARRAY_SPACE_FILLING_TRAVERSAL
-#include <blitz/traversal.h>
-#endif
-
 #include <blitz/indexexpr.h>
-#include <blitz/prettyprint.h>
 
 #include <blitz/array/slice.h>     // Subarrays and slicing
 #include <blitz/array/map.h>       // Tensor index notation
@@ -140,10 +135,10 @@ public:
     //////////////////////////////////////////////
 
     
-    /*
-     * Construct an array from an array expression.
-     */
-
+    /** Construct an array from an expression. Because this entails a
+	memory allocation, it is explicit so this fact is obvious to
+	the user. (There may also be ambiguities in making it
+	implicit?) */
     template<typename T_expr>
     explicit Array(_bz_ArrayExpr<T_expr> expr);
 
@@ -341,6 +336,11 @@ public:
         length_ = shape;
         computeStrides();
         data_ += zeroOffset_;
+
+#ifdef BZ_DEBUG
+	if(!isStorageContiguous())
+	  cerr << "Warning: Pre-existing Array constructor used, but due to alignment requirements,\nthe Array is not contiguous. This will likely lead to memory corruption!\nConsider explicitly specifying strides." << endl;
+#endif
     }
 
     /*
@@ -378,6 +378,11 @@ public:
         length_ = shape;
         computeStrides();
         data_ += zeroOffset_;
+
+#ifdef BZ_DEBUG
+	if(!isStorageContiguous())
+	  cerr << "Warning: Pre-existing Array constructor used, but due to alignment requirements,\nthe Array is not contiguous. This will likely lead to memory corruption!\nConsider explicitly specifying strides." << endl;
+#endif
 
         if (deletionPolicy == duplicateData)
             reference(copy());
@@ -1120,6 +1125,14 @@ public:
     sizeType                               size() const
     { return numElements(); }
 
+  /** Returns the length of the array storage. This can be larger than
+      the number of elements due to padding to meet alignment
+      requirements. If you want to extract the array data to, for
+      example, write it to disk, this is the size of the block
+      needed. */
+    sizeType                               storageSize() const
+  { return T_base::block().length(); }
+
     const TinyVector<diffType, N_rank>&    stride() const
     { return stride_; }
 
@@ -1145,8 +1158,8 @@ public:
     { return zeroOffset_; }
 
   /** Returns true if the array is aligned on a simd vector width. */
-  bool isVectorAligned() const
-  { return T_base::isVectorAligned(zeroOffset()); };
+  bool isVectorAligned(diffType offset) const
+  { return simdTypes<T_numtype>::isVectorAligned(dataFirst()+offset); };
 
     //////////////////////////////////////////////
     // Debugging routines
@@ -2323,42 +2336,6 @@ public:
 #endif
 
 public:
-    // Undocumented implementation routines
-
-    template<typename T_expr, typename T_update>
-    inline T_array& evaluate(T_expr expr, T_update);
-
-#ifdef BZ_HAVE_STD
-#ifdef BZ_ARRAY_SPACE_FILLING_TRAVERSAL
-    template<typename T_expr, typename T_update>
-    inline T_array& evaluateWithFastTraversal(
-        const TraversalOrder<N_rank - 1>& order, 
-        T_expr expr, T_update);
-#endif // BZ_ARRAY_SPACE_FILLING_TRAVERSAL
-#endif
-
-#ifdef BZ_ARRAY_2D_STENCIL_TILING
-    template<typename T_expr, typename T_update>
-    inline T_array& evaluateWithTiled2DTraversal(
-        T_expr expr, T_update);
-#endif
-
-    template<typename T_expr, typename T_update>
-    inline T_array& evaluateWithIndexTraversal1(
-        T_expr expr, T_update);
-
-    template<typename T_expr, typename T_update>
-    inline T_array& evaluateWithIndexTraversalN(
-        T_expr expr, T_update);
-
-    template<typename T_expr, typename T_update>
-    inline T_array& evaluateWithStackTraversal1(
-        T_expr expr, T_update);
-
-    template<typename T_expr, typename T_update>
-    inline T_array& evaluateWithStackTraversalN(
-        T_expr expr, T_update);
-
 
   //T_numtype* restrict getInitializationIterator() { return dataFirst(); }
   iterator restrict getInitializationIterator() { return begin(); }

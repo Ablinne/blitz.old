@@ -87,7 +87,15 @@ public:
         numTVOperands = 0, 
         numTMOperands = 0,
         numIndexPlaceholders = 0,
+      minWidth = simdTypes<T_numtype>::vecWidth,
+      maxWidth = simdTypes<T_numtype>::vecWidth,
         rank_ = N_rank;
+
+  /** For an iterator, the vectorized result for width N is always a
+      TinyVector<T_numtype, N>. */
+  template<int N> struct tvresult {
+    typedef FastTV2Iterator<T_numtype, N> Type;
+  };
 
     // NB: this ctor does NOT preserve stack and stride
     // parameters.  This is for speed purposes.
@@ -174,17 +182,18 @@ public:
     { return data_[i]; }
 
   /** Returns a TinyVector "view" of the data at i, with a vector
-      length appropriate for the simd width. This makes it possible to
-      convert the expression into a TinyVector expression, which is
-      efficiently vectorized. */ 
-   T_tvresult fastRead_tv(sizeType i) const
-  { BZASSERT(i%simdTypes<T_numtype>::vecWidth==0);
-    return T_tvresult(*reinterpret_cast<const typename simdTypes<T_numtype>::vecType*>(&data_[i])); }
+      length specified by the template parameter N. This makes it
+      possible to convert a small part of an arbitrary expression into
+      a TinyVector expression, which is efficiently vectorized. */ 
+  template<int N>
+  typename tvresult<N>::Type fastRead_tv(sizeType i) const
+  {
+    return typename tvresult<N>::Type(*reinterpret_cast<const TinyVector<T_numtype,N>*>(&data_[i])); }
 
   /** Returns true if the iterator data is aligned on a simd
       vector. */
-  bool isVectorAligned() const
-  { return array().isVectorAligned(); };
+  bool isVectorAligned(diffType offset) const
+  { return simdTypes<T_numtype>::isVectorAligned(data_ + offset); };
 
     int suggestStride(int rank) const
     { return array_.stride(rank); }
@@ -242,8 +251,13 @@ public:
     int stride() const
     { return stride_; }
 
+  /** Returns true if the Array has unit stride in the rank. */
     bool isUnitStride(int rank) const
     { return array_.stride(rank) == 1; }
+
+  /** Returns true if the loaded iterator stride is 1. */
+    bool isUnitStride() const
+    { return stride() == 1; }
 
     void advanceUnitStride()
     { ++data_; }

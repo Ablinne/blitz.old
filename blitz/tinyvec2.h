@@ -55,10 +55,13 @@ class FastTV2Iterator;
 template<typename P_numtype, int N_length>
 class FastTV2CopyIterator;
 
-/*****************************************************************************
- * Declaration of class TinyVector
- */
 
+/** The TinyVector class is a one-dimensional, fixed length vector
+    that implements the blitz expression template
+    machinery. TinyVector-only expressions are very fast because they
+    usually get reduced to just the unrolled (and vectorized, if
+    enabled) assembly instructions. TinyVectors can also be used in
+    mixed expressions with other ET classes. */
 template<typename P_numtype, int N_length>
 class TinyVector : public ETBase<TinyVector<P_numtype, N_length> >
 {
@@ -76,8 +79,8 @@ public:
   typedef FastTV2CopyIterator<P_numtype, N_length> T_range_result;
 
     static const int 
-        numArrayOperands = 1, 
-        numIndexPlaceholders = 0,
+    //numArrayOperands = 1, 
+    //numIndexPlaceholders = 0,
         rank_ = 1;
 
     TinyVector()  { }
@@ -88,12 +91,29 @@ public:
     template <typename T_numtype2>
     inline TinyVector(const TinyVector<T_numtype2,N_length>& x);
 
+  /** This constructor creates a TinyVector from another ETBase
+      object. It needs to be explicit to avoid all kinds of
+      ambiguities. */
+    template <typename T_expr>
+    inline explicit TinyVector(const ETBase<T_expr>& expr) {
+      *this = expr; }
+
+  /** This constructor creates a TinyVector specifically from an
+      expression. This one we do NOT want to be explicit because that
+      breaks simple construction assignments like "TinyVector<double,
+      1> v = a+b;", forcing the user to explicitly write it like a
+      construction. */
+    template <typename T_expr>
+    inline TinyVector(const _bz_ArrayExpr<T_expr>& expr) {
+      *this = expr; }
+
     inline TinyVector(const T_numtype initValue);
 
     inline TinyVector(const T_numtype x[]) {
         memcpy(data_,x,N_length*sizeof(T_numtype));
     }
 
+  
     TinyVector(T_numtype x0, T_numtype x1)
     {
         data_[0] = x0;
@@ -338,10 +358,10 @@ public:
   const T_numtype& fastRead(sizeType i) const
     { return data_[i]; }
 
-  /** Return true, since TinyVectors are simd aligned by
-      construction. */
-  bool isVectorAligned() const 
-  { return true; }
+  /** Since data_ is simd aligned by construction, we just have
+      to check the offest. */
+  bool isVectorAligned(diffType offset) const 
+  { return (offset%simdTypes<T_numtype>::vecWidth==0) ? true : false; }
 
   bool canCollapse(int outerLoopRank, int innerLoopRank) const
   {
@@ -363,8 +383,13 @@ public:
   T_vector& initialize(T_numtype);
 
   template<typename T_expr, typename T_update>
-  void
-  _tv_evaluate(const T_expr& expr, T_update);
+  void _tv_evaluate(const T_expr& expr, T_update);
+
+  template<typename T_expr, typename T_update>
+  static void _tv_evaluate_aligned(T_numtype* data, const T_expr& expr, T_update);
+
+  template<typename T_expr, typename T_update>
+  static void _tv_evaluate_unaligned(T_numtype* data, const T_expr& expr, T_update);
 
   // T_vector& operator=(const TinyVector<T_numtype,N_length>& rhs) {
   //       _bz_meta_vecAssign<N_length, 0>::

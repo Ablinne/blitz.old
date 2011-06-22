@@ -143,8 +143,17 @@ public:
         numTVOperands = T_expr::numTVOperands,
         numTMOperands = T_expr::numTMOperands,
 	numIndexPlaceholders = T_expr::numIndexPlaceholders,
+      minWidth = T_expr::minWidth,
+      maxWidth = T_expr::maxWidth,
 	rank_ = T_expr::rank_;
     
+  template<int N> struct tvresult {
+    typedef _bz_FunctorExpr<
+      T_functor,
+      typename T_expr::template tvresult<N>::Type,
+      T_numtype> Type; 
+  };
+
     _bz_FunctorExpr(const _bz_FunctorExpr<P_functor,P_expr,P_result>& a)
         : f_(a.f_), iter_(a.iter_)
     { }
@@ -231,8 +240,9 @@ public:
     T_result fastRead(int i) const { 
       return readHelper<T_typeprop>::fastRead(f_, iter_, i); }
 
-    T_tvresult fastRead_tv(int i) const { 
-      return readHelper<T_tvtypeprop>::fastRead_tv(f_, iter_, i); }
+  template<int N>
+  typename tvresult<N>::Type fastRead_tv(int i) const
+      { return typename tvresult<N>::Type(f_,iter_.fastRead_tv<N>(i)); }
 
     T_result operator[](int i) const { 
       return readHelper<T_typeprop>::indexop(f_, iter_, i); }
@@ -260,8 +270,8 @@ public:
 
       // ****** end reading
 
-  bool isVectorAligned() const 
-  { return iter_.isVectorAligned(); }
+  bool isVectorAligned(diffType offset) const 
+  { return iter_.isVectorAligned(offset); }
 
   T_range_result operator()(RectDomain<rank_> d) const
   {
@@ -285,6 +295,8 @@ public:
     void loadStride(const int rank) { iter_.loadStride(rank); }
 
     bool isUnitStride(const int rank) const { return iter_.isUnitStride(rank); }
+
+    bool isUnitStride() const { return iter_.isUnitStride(); }
 
     void advanceUnitStride() { iter_.advanceUnitStride(); }
   
@@ -409,8 +421,17 @@ public:
         numTMOperands = T_expr1::numTMOperands + T_expr2::numTMOperands,
 	numIndexPlaceholders = T_expr1::numIndexPlaceholders
 	                     + T_expr2::numIndexPlaceholders,
-	rank_ = T_expr1::rank_ > T_expr2::rank_
-             ? T_expr1::rank_ : T_expr2::rank_;
+      minWidth = BZ_MIN(T_expr1::minWidth, T_expr2::minWidth),
+      maxWidth = BZ_MAX(T_expr1::maxWidth, T_expr2::maxWidth),
+      rank_ = BZ_MAX(T_expr1::rank_, T_expr2::rank_);
+
+  template<int N> struct tvresult {
+    typedef _bz_FunctorExpr2<
+      T_functor,
+      typename T_expr1::template tvresult<N>::Type,
+      typename T_expr2::template tvresult<N>::Type,
+      T_numtype> Type; 
+  };
   
     _bz_FunctorExpr2(const _bz_FunctorExpr2<P_functor, P_expr1, P_expr2,
         P_result>& a) 
@@ -512,8 +533,11 @@ public:
     T_result fastRead(int i) const { 
       return readHelper<T_typeprop>::fastRead(f_, iter1_, iter2_, i); }
 
-    T_tvresult fastRead_tv(int i) const { 
-      return readHelper<T_tvtypeprop>::fastRead_tv(f_, iter1_, iter2_, i); }
+  template<int N>
+  typename tvresult<N>::Type fastRead_tv(int i) const
+      { return typename tvresult<N>::Type(f_,
+					  iter1_.fastRead_tv<N>(i),
+					  iter2_.fastRead_tv<N>(i)); }
 
     T_result operator[](int i) const { 
       return readHelper<T_typeprop>::indexop(f_, iter1_, iter2_, i); }
@@ -547,8 +571,9 @@ public:
     return T_range_result(f_, iter1_(d), iter2_(d));
   }
 
-  bool isVectorAligned() const 
-  { return iter1_.isVectorAligned() && iter2_.isVectorAligned(); }
+  bool isVectorAligned(diffType offset) const 
+  { return iter1_.isVectorAligned(offset) && 
+      iter2_.isVectorAligned(offset); }
 
     int ascending(const int rank) const {
         return bounds::compute_ascending(rank, iter1_.ascending(rank),
@@ -607,6 +632,9 @@ public:
   
     bool isUnitStride(const int rank) const
     { return iter1_.isUnitStride(rank) && iter2_.isUnitStride(rank); }
+  
+    bool isUnitStride() const
+    { return iter1_.isUnitStride() && iter2_.isUnitStride(); }
   
     void advanceUnitStride() { 
         iter1_.advanceUnitStride(); 
@@ -775,9 +803,21 @@ public:
 	numIndexPlaceholders = T_expr1::numIndexPlaceholders
 	                     + T_expr2::numIndexPlaceholders
 	                     + T_expr3::numIndexPlaceholders,
-	rank12 = T_expr1::rank_ > T_expr2::rank_
-	       ? T_expr1::rank_ : T_expr2::rank_,
-	rank_ = rank12 > T_expr3::rank_ ? rank12 : T_expr3::rank_;
+      minWidth = BZ_MIN(BZ_MIN(T_expr1::minWidth, T_expr2::minWidth),
+			T_expr3::minWidth),
+      maxWidth = BZ_MAX(BZ_MAX(T_expr1::maxWidth, T_expr2::maxWidth), 
+			T_expr3::maxWidth),
+      rank_ = BZ_MAX(BZ_MAX(T_expr1::rank_, T_expr2::rank_),
+		     T_expr3::rank_);
+
+  template<int N> struct tvresult {
+    typedef _bz_FunctorExpr3<
+      T_functor,
+      typename T_expr1::template tvresult<N>::Type,
+      typename T_expr2::template tvresult<N>::Type,
+      typename T_expr3::template tvresult<N>::Type,
+      T_numtype> Type; 
+  };
   
     _bz_FunctorExpr3(const _bz_FunctorExpr3<P_functor, P_expr1, P_expr2,
         P_expr3, P_result>& a) 
@@ -895,9 +935,12 @@ public:
     T_result fastRead(int i) const { 
       return readHelper<T_typeprop>::fastRead(f_, iter1_, iter2_, iter3_, i); }
 
-    T_tvresult fastRead_tv(int i) const { 
-      return readHelper<T_tvtypeprop>::fastRead_tv(f_, iter1_, 
-						   iter2_, iter3_, i); }
+      template<int N>
+      typename tvresult<N>::Type fastRead_tv(int i) const
+      { return typename tvresult<N>::Type(f_,
+					  iter1_.fastRead_tv<N>(i),
+					  iter2_.fastRead_tv<N>(i),
+					  iter3_.fastRead_tv<N>(i)); }
 
     T_result operator[](int i) const { 
       return readHelper<T_typeprop>::indexop(f_, iter1_, iter2_, iter3_, i); }
@@ -926,9 +969,10 @@ public:
 
       // ****** end reading
   
-  bool isVectorAligned() const 
-  { return iter1_.isVectorAligned() && iter2_.isVectorAligned() &&
-      iter3_.isVectorAligned(); }
+  bool isVectorAligned(diffType offset) const 
+  { return iter1_.isVectorAligned(offset) &&
+      iter2_.isVectorAligned(offset) &&
+      iter3_.isVectorAligned(offset); }
 
   T_range_result operator()(RectDomain<rank_> d) const
   {
@@ -1002,6 +1046,11 @@ public:
     bool isUnitStride(const int rank) const {
         return iter1_.isUnitStride(rank) && iter2_.isUnitStride(rank)
             && iter3_.isUnitStride(rank);
+    }
+  
+    bool isUnitStride() const {
+        return iter1_.isUnitStride() && iter2_.isUnitStride()
+            && iter3_.isUnitStride();
     }
   
     void advanceUnitStride() { 
@@ -1174,7 +1223,7 @@ public:                                                                   \
     _bz_Functor ## classname ## funcname (const classname& c)             \
         : c_(c)                                                           \
     { }                                                                   \
-    template<typename T_numtype1>                                            \
+    template<typename T_numtype1>					\
     inline T_numtype1 operator()(T_numtype1 x) const                      \
     { return c_.funcname(x); }                                            \
 private:                                                                  \
@@ -1395,7 +1444,7 @@ funcname(const BZ_BLITZ_SCOPE(ETBase)<P_expr>& a) const                   \
         _bz_Functor ## classname ## funcname,                             \
         _bz_typename BZ_BLITZ_SCOPE(asExpr)<P_expr>::T_expr,              \
         _bz_typename BZ_BLITZ_SCOPE(asExpr)<P_expr>::T_expr::T_optype> > \
-        (*this, a.unwrap());                                              \
+      (_bz_Functor ## classname ## funcname(*this), a.unwrap());	\
 }
 
 #define BZ_DECLARE_MEMBER_FUNCTION2(classname, funcname)                  \
@@ -1421,7 +1470,7 @@ funcname(const BZ_BLITZ_SCOPE(ETBase)<P_expr1>& a,                        \
                    BZ_BLITZ_SCOPE(asExpr)<P_expr1>::T_expr::T_optype,    \
                    _bz_typename                                           \
                    BZ_BLITZ_SCOPE(asExpr)<P_expr2>::T_expr::T_optype)> > \
-        (*this, a.unwrap(), b.unwrap());                                  \
+      (_bz_Functor ## classname ## funcname(*this), a.unwrap(), b.unwrap()); \
 }
 
 #define BZ_DECLARE_MEMBER_FUNCTION3(classname, funcname)                  \
@@ -1454,7 +1503,8 @@ funcname(const BZ_BLITZ_SCOPE(ETBase)<P_expr1>& a,                        \
                    BZ_BLITZ_SCOPE(asExpr)<P_expr2>::T_expr::T_optype,    \
                    _bz_typename                                           \
                    BZ_BLITZ_SCOPE(asExpr)<P_expr3>::T_expr::T_optype))> >\
-        (*this, a.unwrap(), b.unwrap(), c.unwrap());                      \
+      (_bz_Functor ## classname ## funcname(*this),			\
+       a.unwrap(), b.unwrap(), c.unwrap());				\
 }
 
 
@@ -1470,9 +1520,8 @@ funcname(const BZ_BLITZ_SCOPE(ETBase)<P_expr>& a) const                   \
     return BZ_BLITZ_SCOPE(_bz_ArrayExpr)<                                 \
         BZ_BLITZ_SCOPE(_bz_FunctorExpr)<                                  \
         _bz_Functor ## classname ## funcname,                             \
-        _bz_typename BZ_BLITZ_SCOPE(asExpr)<P_expr>::T_expr,              \
-        ret> >                                                            \
-        (*this, a.unwrap());                                              \
+      _bz_typename BZ_BLITZ_SCOPE(asExpr)<P_expr>::T_expr, ret> >	\
+      (_bz_Functor ## classname ## funcname(*this), a.unwrap());	\
 }
 
 #define BZ_DECLARE_MEMBER_FUNCTION2_RET(classname, funcname, ret)         \
@@ -1492,7 +1541,7 @@ funcname(const BZ_BLITZ_SCOPE(ETBase)<P_expr1>& a,                        \
         _bz_typename BZ_BLITZ_SCOPE(asExpr)<P_expr1>::T_expr,             \
         _bz_typename BZ_BLITZ_SCOPE(asExpr)<P_expr2>::T_expr,             \
         ret> >                                                            \
-        (*this, a.unwrap(), b.unwrap());                                  \
+      (_bz_Functor ## classname ## funcname(*this), a.unwrap(), b.unwrap()); \
 }
 
 #define BZ_DECLARE_MEMBER_FUNCTION3_RET(classname, funcname, ret)         \
@@ -1515,7 +1564,8 @@ funcname(const BZ_BLITZ_SCOPE(ETBase)<P_expr1>& a,                        \
         _bz_typename BZ_BLITZ_SCOPE(asExpr)<P_expr2>::T_expr,             \
         _bz_typename BZ_BLITZ_SCOPE(asExpr)<P_expr3>::T_expr,             \
         ret> >                                                            \
-        (*this, a.unwrap(), b.unwrap(), c.unwrap());                      \
+      (_bz_Functor ## classname ## funcname(*this),			\
+       a.unwrap(), b.unwrap(), c.unwrap());				\
 }
 
 

@@ -76,7 +76,15 @@ public:
         numTVOperands = 0, 
         numTMOperands = 1, 
         numIndexPlaceholders = 0,
+      minWidth = simdTypes<T_numtype>::vecWidth,
+      maxWidth = simdTypes<T_numtype>::vecWidth,
         rank_ = 2;
+
+  /** For an iterator, the vectorized result for width N is always a
+      TinyVector<T_numtype, N>. */
+  template<int N> struct tvresult {
+    typedef FastTV2Iterator<T_numtype, N> Type;
+  };
 
   FastTM2IteratorBase(const T_iterator& x)
         : data_(x.data_), array_(x.array_)
@@ -152,16 +160,15 @@ public:
     T_result fastRead(sizeType i) const
   { return array_.fastRead(i); }
 
-    T_tvresult fastRead_tv(sizeType i) const
-  { BZASSERT(i%simdTypes<T_numtype>::vecWidth==0);
-    return T_tvresult(*reinterpret_cast<const typename simdTypes<T_numtype>::vecType*>(array_.data()+i)); }
+  template<int N>
+  typename tvresult<N>::Type fastRead_tv(sizeType i) const
+  { 
+    return typename tvresult<N>::Type(*reinterpret_cast<const TinyVector<T_numtype,N>*>(&data_[i])); }
 
-  /** Return true if the data pointer is simd aligned. We just check
-      that the offset of data_ from the array data() by an integral
-      amount, since the TinyMatrix itself is aligned by
-      construction. */
-  bool isVectorAligned() const 
-  { return (array_.data()-data_)%simdTypes<T_numtype>::vecWidth == 0; }
+  /** Since data_ is simd aligned by construction, we just have
+      to check the offest. */
+  bool isVectorAligned(diffType offset) const 
+  { return (offset%simdTypes<T_numtype>::vecWidth==0) ? true : false; }
 
   static int suggestStride(int r) 
     { return T_matrix::stride(r); }
@@ -221,6 +228,9 @@ public:
 
   static bool isUnitStride(int r) 
     { return T_matrix::stride(r) == 1; }
+
+  bool isUnitStride() const
+    { return stride() == 1; }
 
     void advanceUnitStride()
     { ++data_; }

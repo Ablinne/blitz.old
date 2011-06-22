@@ -61,6 +61,9 @@
 
 BZ_NAMESPACE(blitz)
 
+#define BZ_MAX(a,b) (a)>(b) ? (a) : (b)
+#define BZ_MIN(a,b) (a)<(b) ? (a) : (b)
+
 template<typename T1, typename T2>
 class _bz_ExprPair {
 public:
@@ -102,6 +105,7 @@ public:
 			    _bz_ArrayExpr<test> >::T_selected T_typeprop;
   typedef typename unwrapET<T_typeprop>::T_unwrapped T_result;
 
+  
   // select tvreturn type
   typedef typename selectET<typename T_expr::T_tvtypeprop, 
 			    T_numtype,
@@ -119,7 +123,15 @@ public:
         numTVOperands = T_expr::numTVOperands,
         numTMOperands = T_expr::numTMOperands,
         numIndexPlaceholders = T_expr::numIndexPlaceholders,
+      minWidth = T_expr::minWidth,
+      maxWidth = T_expr::maxWidth,
         rank_ = T_expr::rank_;
+
+  // traits class that computes the vectorized return type for vector
+  // width N.
+  template<int N> struct tvresult {
+    typedef _bz_ArrayExpr<typename T_expr::template tvresult<N>::Type> Type;
+  };
 
     _bz_ArrayExpr(const _bz_ArrayExpr<T_expr>& a)
 #ifdef BZ_NEW_EXPRESSION_TEMPLATES
@@ -208,6 +220,9 @@ public:
     bool isUnitStride(int rank) const
     { return iter_.isUnitStride(rank); }
 
+    bool isUnitStride() const
+    { return iter_.isUnitStride(); }
+
     void advanceUnitStride()
     { iter_.advanceUnitStride(); }
 
@@ -223,11 +238,12 @@ public:
     T_result fastRead(int i) const
     { return iter_.fastRead(i); }
 
-    T_tvresult fastRead_tv(int i) const
-    { return iter_.fastRead_tv(i); }
+  template<int N>
+  typename tvresult<N>::Type fastRead_tv(int i) const
+  { return iter_.fastRead_tv<N>(i); }
 
-  bool isVectorAligned() const 
-  { return iter_.isVectorAligned(); }
+  bool isVectorAligned(diffType offset) const 
+  { return iter_.isVectorAligned(offset); }
 
     // this is needed for the stencil expression fastRead to work
     void _bz_offsetData(sizeType i)
@@ -513,7 +529,15 @@ public:
         numTVOperands = T_expr::numTVOperands,
         numTMOperands = T_expr::numTMOperands,
         numIndexPlaceholders = T_expr::numIndexPlaceholders,
+      minWidth = T_expr::minWidth,
+      maxWidth = T_expr::maxWidth,
         rank_ = T_expr::rank_;
+
+  template<int N> struct tvresult {
+    typedef _bz_ArrayExprUnaryOp<
+      typename T_expr::template tvresult<N>::Type,
+      T_op> Type; 
+  };
 
     _bz_ArrayExprUnaryOp(const _bz_ArrayExprUnaryOp<T_expr, T_op>& a)
         : iter_(a.iter_)
@@ -606,8 +630,13 @@ public:
     T_result fastRead(int i) const { 
       return readHelper<T_typeprop>::fastRead(iter_, i); }
 
-    T_tvresult fastRead_tv(int i) const { 
-      return readHelper<T_tvtypeprop>::fastRead_tv(iter_, i); }
+      //T_tvresult fastRead_tv(int i) const { 
+      //return readHelper<T_tvtypeprop>::fastRead_tv(iter_, i); }
+
+  template<int N>
+  typename tvresult<N>::Type fastRead_tv(int i) const
+  { return iter_.fastRead_tv<N>(i); }
+
 
     T_result operator[](int i) const { 
       return readHelper<T_typeprop>::indexop(iter_, i); }
@@ -639,8 +668,8 @@ public:
 
       // ****** end reading
 
-  bool isVectorAligned() const 
-  { return iter_.isVectorAligned(); }
+  bool isVectorAligned(diffType offset) const 
+  { return iter_.isVectorAligned(offset); }
 
   template<int N>
   T_range_result operator()(const RectDomain<N>& d) const
@@ -675,6 +704,9 @@ public:
 
     bool isUnitStride(int rank) const
     { return iter_.isUnitStride(rank); }
+
+    bool isUnitStride() const
+    { return iter_.isUnitStride(); }
 
     void advanceUnitStride()
     {
@@ -798,8 +830,16 @@ public:
       T_expr2::numTMOperands,
         numIndexPlaceholders = T_expr1::numIndexPlaceholders
                              + T_expr2::numIndexPlaceholders,
-        rank_ = (T_expr1::rank_ > T_expr2::rank_) 
-             ? T_expr1::rank_ : T_expr2::rank_;
+      minWidth = BZ_MIN(T_expr1::minWidth, T_expr2::minWidth),
+      maxWidth = BZ_MAX(T_expr1::maxWidth, T_expr2::maxWidth),
+      rank_ = BZ_MAX(T_expr1::rank_, T_expr2::rank_);
+
+  template<int N> struct tvresult {
+    typedef _bz_ArrayExprBinaryOp<
+      typename T_expr1::template tvresult<N>::Type,
+      typename T_expr2::template tvresult<N>::Type,
+      T_op> Type; 
+  };
 
     _bz_ArrayExprBinaryOp(
         const _bz_ArrayExprBinaryOp<T_expr1, T_expr2, T_op>& a)
@@ -882,8 +922,13 @@ public:
     T_result fastRead(int i) const { 
       return readHelper<T_typeprop>::fastRead(iter1_, iter2_, i); }
 
-    T_tvresult fastRead_tv(int i) const { 
-      return readHelper<T_tvtypeprop>::fastRead_tv(iter1_, iter2_, i); }
+    // T_tvresult fastRead_tv(int i) const { 
+    //   return readHelper<T_tvtypeprop>::fastRead_tv(iter1_, iter2_, i); }
+
+  template<int N>
+  typename tvresult<N>::Type fastRead_tv(int i) const
+      { return typename tvresult<N>::Type(iter1_.fastRead_tv<N>(i),
+					  iter2_.fastRead_tv<N>(i)); }
 
     T_result operator[](int i) const { 
       return readHelper<T_typeprop>::indexop(iter1_, iter2_, i); }
@@ -912,8 +957,9 @@ public:
 
       // ****** end reading
 
-  bool isVectorAligned() const 
-  { return iter1_.isVectorAligned() && iter2_.isVectorAligned(); }
+  bool isVectorAligned(diffType offset) const 
+  { return iter1_.isVectorAligned(offset) && 
+      iter2_.isVectorAligned(offset); }
 
   template<int N>
   T_range_result operator()(const RectDomain<N>& d) const
@@ -979,6 +1025,9 @@ public:
     
     bool isUnitStride(int rank) const
     { return iter1_.isUnitStride(rank) && iter2_.isUnitStride(rank); }
+
+    bool isUnitStride() const
+    { return iter1_.isUnitStride() && iter2_.isUnitStride(); }
 
     void advanceUnitStride()
     { 
@@ -1147,11 +1196,20 @@ public:
         numIndexPlaceholders = T_expr1::numIndexPlaceholders
                              + T_expr2::numIndexPlaceholders
                              + T_expr3::numIndexPlaceholders,
-        rank_ = (T_expr1::rank_ > T_expr2::rank_) 
-             ? ((T_expr1::rank_ > T_expr3::rank_)
-                ? T_expr1::rank_ : T_expr3::rank_)
-             : ((T_expr2::rank_ > T_expr3::rank_) 
-                ? T_expr2::rank_ : T_expr3::rank_);
+      minWidth = BZ_MIN(BZ_MIN(T_expr1::minWidth, T_expr2::minWidth),
+			T_expr3::minWidth),
+      maxWidth = BZ_MAX(BZ_MAX(T_expr1::maxWidth, T_expr2::maxWidth), 
+			T_expr3::maxWidth),
+      rank_ = BZ_MAX(BZ_MAX(T_expr1::rank_, T_expr2::rank_),
+		     T_expr3::rank_);
+
+  template<int N> struct tvresult {
+    typedef _bz_ArrayExprTernaryOp<
+      typename T_expr1::template tvresult<N>::Type,
+      typename T_expr2::template tvresult<N>::Type,
+      typename T_expr3::template tvresult<N>::Type,
+      T_op> Type; 
+  };
 
     _bz_ArrayExprTernaryOp(
         const _bz_ArrayExprTernaryOp<T_expr1, T_expr2, T_expr3, T_op>& a)
@@ -1255,8 +1313,14 @@ public:
     T_result fastRead(int i) const { 
       return readHelper<T_typeprop>::fastRead(iter1_, iter2_, iter3_, i); }
 
-    T_tvresult fastRead_tv(int i) const { 
-      return readHelper<T_tvtypeprop>::fastRead_tv(iter1_, iter2_, iter3_, i); }
+      template<int N>
+      typename tvresult<N>::Type fastRead_tv(int i) const
+      { return typename tvresult<N>::Type(iter1_.fastRead_tv<N>(i),
+					  iter2_.fastRead_tv<N>(i),
+					  iter3_.fastRead_tv<N>(i)); }
+      
+    // T_tvresult fastRead_tv(int i) const { 
+    //   return readHelper<T_tvtypeprop>::fastRead_tv(iter1_, iter2_, iter3_, i); }
 
     T_result operator[](int i) const { 
       return readHelper<T_typeprop>::indexop(iter1_, iter2_, iter3_, i); }
@@ -1286,9 +1350,10 @@ public:
 
       // ****** end reading
 
-  bool isVectorAligned() const 
-  { return iter1_.isVectorAligned() && iter2_.isVectorAligned() &&
-      iter3_.isVectorAligned(); }
+  bool isVectorAligned(diffType offset) const 
+  { return iter1_.isVectorAligned(offset) && 
+      iter2_.isVectorAligned(offset) &&
+      iter3_.isVectorAligned(offset); }
 
   template<int N>
   T_range_result operator()(const RectDomain<N>& d) const
@@ -1370,6 +1435,13 @@ public:
         return iter1_.isUnitStride(rank)
             && iter2_.isUnitStride(rank)
             && iter3_.isUnitStride(rank);
+    }
+
+    bool isUnitStride() const
+    {
+        return iter1_.isUnitStride()
+            && iter2_.isUnitStride()
+            && iter3_.isUnitStride();
     }
 
     void advanceUnitStride()
@@ -1483,8 +1555,6 @@ protected:
     T_expr3 iter3_; 
 };
 
-#define BZ_MAX(a,b) (a)>(b) ? (a) : (b)
-
 template<typename P_expr1, typename P_expr2, typename P_expr3,
 	 typename P_expr4, typename P_op>
 class _bz_ArrayExprQuaternaryOp {
@@ -1578,8 +1648,22 @@ public:
     + T_expr3::numIndexPlaceholders
     + T_expr4::numIndexPlaceholders,
 
+    minWidth = BZ_MIN(BZ_MIN(T_expr1::minWidth, T_expr2::minWidth),
+		      BZ_MIN(T_expr3::minWidth, T_expr4::minWidth)),
+    maxWidth = BZ_MAX(BZ_MAX(T_expr1::maxWidth, T_expr2::maxWidth),
+		      BZ_MAX(T_expr3::maxWidth, T_expr4::maxWidth)),
+
     rank_ = BZ_MAX(BZ_MAX(T_expr1::rank_, T_expr2::rank_),
 		  BZ_MAX(T_expr3::rank_, T_expr4::rank_));
+
+  template<int N> struct tvresult {
+    typedef _bz_ArrayExprQuaternaryOp<
+      typename T_expr1::template tvresult<N>::Type,
+      typename T_expr2::template tvresult<N>::Type,
+      typename T_expr3::template tvresult<N>::Type,
+      typename T_expr4::template tvresult<N>::Type,
+      T_op> Type; 
+  };
 
     _bz_ArrayExprQuaternaryOp(
         const _bz_ArrayExprQuaternaryOp<T_expr1, T_expr2, T_expr3, T_expr4, T_op>& a)
@@ -1695,9 +1779,16 @@ public:
       return readHelper<T_typeprop>::fastRead(iter1_, iter2_, 
 					      iter3_, iter4_, i); }
 
-    T_tvresult fastRead_tv(int i) const { 
-      return readHelper<T_tvtypeprop>::fastRead_tv(iter1_, iter2_, 
-						   iter3_, iter4_, i); }
+      template<int N>
+      typename tvresult<N>::Type fastRead_tv(int i) const
+      { return typename tvresult<N>::Type(iter1_.fastRead_tv<N>(i),
+					  iter2_.fastRead_tv<N>(i),
+					  iter3_.fastRead_tv<N>(i),
+					  iter4_.fastRead_tv<N>(i)); }
+
+    // T_tvresult fastRead_tv(int i) const { 
+    //   return readHelper<T_tvtypeprop>::fastRead_tv(iter1_, iter2_, 
+    // 						   iter3_, iter4_, i); }
 
     T_result operator[](int i) const { 
       return readHelper<T_typeprop>::indexop(iter1_, iter2_, 
@@ -1730,9 +1821,11 @@ public:
 
       // ****** end reading
 
-  bool isVectorAligned() const 
-  { return iter1_.isVectorAligned() && iter2_.isVectorAligned() &&
-      iter3_.isVectorAligned() && iter3_.isVectorAligned(); }
+  bool isVectorAligned(diffType offset) const 
+  { return iter1_.isVectorAligned(offset) &&
+      iter2_.isVectorAligned(offset) &&
+      iter3_.isVectorAligned(offset) &&
+      iter3_.isVectorAligned(offset); }
 
   template<int N>
   T_range_result operator()(const RectDomain<rank_>& d) const
@@ -1836,6 +1929,14 @@ public:
             && iter2_.isUnitStride(rank)
             && iter3_.isUnitStride(rank)
             && iter4_.isUnitStride(rank);
+    }
+
+    bool isUnitStride() const
+    {
+        return iter1_.isUnitStride()
+            && iter2_.isUnitStride()
+            && iter3_.isUnitStride()
+            && iter4_.isUnitStride();
     }
 
     void advanceUnitStride()
@@ -1982,7 +2083,16 @@ public:
         numTVOperands = 0, 
         numTMOperands = 0, 
         numIndexPlaceholders = 0, 
+      minWidth = simdTypes<T_numtype>::vecWidth,
+      maxWidth = simdTypes<T_numtype>::vecWidth,
         rank_ = 0;
+
+  /** For the purpose of vectorizing across the container (as opposed
+      to for operating on multicomponent types), a constant is always
+      a constant. */
+  template<int N> struct tvresult {
+    typedef _bz_ArrayExprConstant<T_numtype> Type;
+  };
 
     _bz_ArrayExprConstant(const _bz_ArrayExprConstant<T_numtype>& a)
         : value_(a.value_)
@@ -2037,6 +2147,9 @@ public:
     bool isUnitStride(int) const
     { return true; }
 
+    bool isUnitStride() const
+    { return true; }
+
     void advanceUnitStride()
     { }
 
@@ -2051,10 +2164,14 @@ public:
   const T_numtype& fastRead(int) const
     { return value_; }
 
-  const T_numtype& fastRead_tv(int) const
-    { return value_; }
+  // const T_numtype& fastRead_tv(int) const
+  //   { return value_; }
 
-  bool isVectorAligned() const 
+  template<int N>
+  typename tvresult<N>::Type fastRead_tv(int i) const
+  { return value_; }
+
+  bool isVectorAligned(diffType offset) const 
   { return true; }
 
   // this is needed for the stencil expression fastRead to work
